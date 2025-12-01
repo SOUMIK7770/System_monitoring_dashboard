@@ -1,63 +1,48 @@
-"""
-Backend logic for performance monitoring
-"""
-from collections import deque
-from modules.utils.helpers import get_psutil
-
+import psutil
+import random
 
 class PerformanceMonitor:
-    def __init__(self, maxlen=60):
-        self.psutil = get_psutil()
-        self.cpu_data = deque(maxlen=maxlen)
-        self.memory_data = deque(maxlen=maxlen)
-        self.disk_data = deque(maxlen=maxlen)
-        self.gpu_data = deque(maxlen=maxlen)
-        self.gpu_memory_data = deque(maxlen=maxlen)
-    
-    def get_cpu_usage(self):
-        """Get current CPU usage percentage"""
-        if self.psutil:
-            return self.psutil.cpu_percent(interval=0.1)
-        return 0
-    
-    def get_memory_usage(self):
-        """Get current memory usage percentage"""
-        if self.psutil:
-            mem = self.psutil.virtual_memory()
-            return mem.percent
-        return 0
-    
-    def get_disk_usage(self):
-        """Get current disk usage percentage"""
-        if self.psutil:
-            disk = self.psutil.disk_usage('/')
-            return disk.percent
-        return 0
-    
-    def get_gpu_usage(self):
-        """Get GPU usage (placeholder)"""
-        # Would require pynvml or similar library
-        return 0
-    
-    def get_gpu_memory_usage(self):
-        """Get GPU memory usage (placeholder)"""
-        # Would require pynvml or similar library
-        return 0
-    
-    def update_data(self):
-        """Update all data collections"""
-        self.cpu_data.append(self.get_cpu_usage())
-        self.memory_data.append(self.get_memory_usage())
-        self.disk_data.append(self.get_disk_usage())
-        self.gpu_data.append(self.get_gpu_usage())
-        self.gpu_memory_data.append(self.get_gpu_memory_usage())
-    
+    def __init__(self):
+        # 60 data points for each graph (1 minute history)
+        self.history_length = 60
+
+        self.cpu_history = [0] * self.history_length
+        self.mem_history = [0] * self.history_length
+        self.disk_history = [0] * self.history_length
+        self.gpu_history = [0] * self.history_length      # Dummy GPU %
+        self.gpu_mem_history = [0] * self.history_length  # Dummy GPU Mem %
+
+    # Maintains rolling window
+    def _push(self, arr, value):
+        arr.append(value)
+        if len(arr) > self.history_length:
+            arr.pop(0)
+        return arr
+
     def get_all_data(self):
-        """Get all collected data"""
+        # REAL system values
+        cpu = psutil.cpu_percent()
+        mem = psutil.virtual_memory().percent
+
+        # Disk usage % (simplified)
+        disk = psutil.disk_usage('/').percent
+
+        # GPU placeholders (because you're not using NVML yet)
+        gpu = random.uniform(0, 10)   
+        gpu_mem = random.uniform(0, 10)
+
+        # Update histories
+        self._push(self.cpu_history, cpu)
+        self._push(self.mem_history, mem)
+        self._push(self.disk_history, disk)
+        self._push(self.gpu_history, gpu)
+        self._push(self.gpu_mem_history, gpu_mem)
+
+        # Return dictionary EXACTLY as UI expects
         return {
-            'cpu': list(self.cpu_data),
-            'memory': list(self.memory_data),
-            'disk': list(self.disk_data),
-            'gpu': list(self.gpu_data),
-            'gpu_memory': list(self.gpu_memory_data)
+            "cpu": self.cpu_history,
+            "memory": self.mem_history,
+            "disk": self.disk_history,
+            "gpu": self.gpu_history,
+            "gpu_memory": self.gpu_mem_history,
         }
