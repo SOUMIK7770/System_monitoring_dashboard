@@ -2,7 +2,7 @@ import tkinter as tk
 from modules.performance.ui import PerformanceUI
 from modules.performance.backend import PerformanceMonitor
 from modules.processes.ui import ProcessesUI
-from modules.startup_apps.ui import StartupAppsUI
+from modules.startup.ui import StartupAppsUI
 from modules.settings.ui import SettingsUI
 
 

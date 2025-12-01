@@ -3,7 +3,7 @@ UI for process management
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
-from modules.processes.Processes_backend import ProcessManager
+from modules.processes.backend import ProcessManager
 from modules.utils.helpers import check_psutil
 
 

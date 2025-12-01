@@ -2,7 +2,7 @@
 UI for performance monitoring
 """
 import tkinter as tk
-from modules.performance.Performance_backend import PerformanceMonitor
+from modules.performance.backend import PerformanceMonitor
 from modules.utils.helpers import check_matplotlib, check_psutil
 
 

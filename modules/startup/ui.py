@@ -3,7 +3,7 @@ UI for startup applications management
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
-from modules.startup_apps.startup_app_backend import StartupAppsManager
+from modules.startup.backend import StartupAppsManager
 
 
 class StartupAppsUI:
