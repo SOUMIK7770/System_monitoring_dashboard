@@ -1,278 +1,189 @@
-"""
-Performance Dashboard UI - Black & Orange Futuristic Theme
-Layout:
-  Row 1: Disk (left) | Memory (right)
-  Row 2: GPU Memory (left) | GPU Usage (right)
-  Row 3: CPU Usage (full width)
-Includes:
-  - 12px rounded cards
-  - Matte dark background
-  - Orange line with soft fill glow
-"""
-
-import tkinter as tk
+# modules/performance/ui.py
 import customtkinter as ctk
-from modules.performance.backend import PerformanceMonitor
-from modules.utils.helpers import check_matplotlib, check_psutil
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import threading
+import time
+from modules import styles
+from modules.performance import backend as perf_backend
+import collections
 
-# THEME COLORS (match main.py)
-BACKGROUND_DARK = "#0E0E12"
-CARD_BG = "#1B1B24"
-ACCENT_ORANGE = "#FF6B00"
-ACCENT_ORANGE_LIGHT = "#FF8C32"
-TEXT_PRIMARY = "#F5F5F5"
-TEXT_MUTED = "#8B8B94"
-
+UPDATE_INTERVAL = 0.25  # seconds
 
 class PerformanceUI:
-    def __init__(self, parent, monitor=None):
+    def __init__(self, parent):
         self.parent = parent
-        self.monitor = monitor if monitor else PerformanceMonitor()
-        self.update_running = False
-        self.update_job = None
+        self.running = True
 
-        if not check_matplotlib():
-            ctk.CTkLabel(
-                parent,
-                text="Install matplotlib: pip install matplotlib",
-                font=ctk.CTkFont(size=14, weight="bold"),
-                text_color="red",
-            ).pack(pady=20)
-            return
+        self.prev_net = {"sent": 0, "recv": 0}
 
-        if not check_psutil():
-            ctk.CTkLabel(
-                parent,
-                text="Install psutil: pip install psutil",
-                font=ctk.CTkFont(size=14, weight="bold"),
-                text_color="red",
-            ).pack(pady=20)
-            return
+        # fixed length buffers (60 samples)
+        self.maxlen = 120  # keep a bit more since we update every .25s -> 30s = 120
+        self.cpu_hist = collections.deque(maxlen=self.maxlen)
+        self.ram_hist = collections.deque(maxlen=self.maxlen)
+        self.disk_hist = collections.deque(maxlen=self.maxlen)
+        self.gpu_hist = collections.deque(maxlen=self.maxlen)
+        self.gpu_mem_hist = collections.deque(maxlen=self.maxlen)
+        self.net_down_hist = collections.deque(maxlen=self.maxlen)
+        self.net_up_hist = collections.deque(maxlen=self.maxlen)
 
-        self._setup_matplotlib()
-        self.build_ui()
+        self._build_ui()
+        # start background updater
+        self.updater_thread = threading.Thread(target=self._update_loop, daemon=True)
+        self.updater_thread.start()
 
-    # ---------------- MATPLOTLIB SETUP ----------------
+    def _build_ui(self):
+        self.parent.configure(fg_color=styles.BG_MAIN)
 
-    def _setup_matplotlib(self):
-        import matplotlib
-        matplotlib.use("TkAgg")
-        from matplotlib.figure import Figure
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        # Title
+        header = ctk.CTkFrame(self.parent, fg_color=styles.BG_MAIN)
+        header.pack(fill="x", padx=16, pady=(12,6))
+        ctk.CTkLabel(header, text="PERFORMANCE", font=ctk.CTkFont(size=26, weight="bold"),
+                     text_color=styles.TEXT_PRIMARY).pack(side="left")
+        ctk.CTkLabel(header, text="System Resource Monitoring", font=ctk.CTkFont(size=12),
+                     text_color=styles.NEON_ORANGE).pack(side="left", padx=10)
 
-        self.Figure = Figure
-        self.FigureCanvasTkAgg = FigureCanvasTkAgg
+        # Top metric cards (CPU, RAM, DISK, NET)
+        top = ctk.CTkFrame(self.parent, fg_color=styles.BG_MAIN)
+        top.pack(fill="x", padx=16, pady=(6,8))
 
-    # ---------------- UI LAYOUT ----------------
+        self.val_cpu = self._create_value_card(top, "CPU", styles.NEON_ORANGE)
+        self.val_ram = self._create_value_card(top, "RAM", styles.NEON_BLUE)
+        self.val_disk = self._create_value_card(top, "DISK", styles.NEON_YELLOW)
+        self.val_net = self._create_value_card(top, "NET", styles.NEON_CYAN)
 
-    def build_ui(self):
-        self.parent.configure(fg_color=BACKGROUND_DARK)
+        # Graph grid
+        grid = ctk.CTkFrame(self.parent, fg_color=styles.BG_MAIN)
+        grid.pack(fill="both", expand=True, padx=16, pady=(6,16))
+        grid.grid_columnconfigure((0,1), weight=1)
+        grid.grid_rowconfigure((0,1,2,3), weight=1)
 
+        self.card_disk = self._create_graph_card(grid, "Disk Usage", 0, 0, styles.NEON_YELLOW)
+        self.card_ram = self._create_graph_card(grid, "Memory Usage", 0, 1, styles.NEON_BLUE)
+        self.card_gpu_mem = self._create_graph_card(grid, "GPU Memory", 1, 0, styles.NEON_PINK)
+        self.card_gpu_usage = self._create_graph_card(grid, "GPU Usage", 1, 1, styles.NEON_PURPLE)
+        self.card_cpu = self._create_graph_card(grid, "CPU Usage", 2, 0, styles.NEON_ORANGE, colspan=2)
+        self.card_net = self._create_graph_card(grid, "Network I/O", 3, 0, styles.NEON_CYAN, colspan=2, multi=True)
 
-        # HEADER
-        header = ctk.CTkFrame(self.parent, fg_color=BACKGROUND_DARK)
-        header.pack(fill="x", padx=22, pady=(20, 10))
+    def _create_value_card(self, parent, title, accent):
+        frame = ctk.CTkFrame(parent, fg_color=styles.CARD_BG, corner_radius=styles.CORNER_RADIUS)
+        frame.pack(side="left", expand=True, fill="both", padx=8, pady=4)
 
-        title = ctk.CTkLabel(
-            header,
-            text="PERFORMANCE",
-            font=ctk.CTkFont("Segoe UI", 26, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        )
-        title.pack(side="left")
+        lbl = ctk.CTkLabel(frame, text=title, text_color=styles.TEXT_PRIMARY, font=ctk.CTkFont(size=14, weight="bold"))
+        lbl.pack(anchor="w", padx=12, pady=(8,0))
+        val = ctk.CTkLabel(frame, text="0.0%", text_color=accent, font=ctk.CTkFont(size=20, weight="bold"))
+        val.pack(anchor="w", padx=12, pady=(4,12))
+        return val
 
-        subtitle = ctk.CTkLabel(
-            header,
-            text="System Resource Monitoring",
-            font=ctk.CTkFont("Segoe UI", 14),
-            text_color=ACCENT_ORANGE,
-        )
-        subtitle.pack(side="left", padx=(12, 0))
+    def _create_graph_card(self, parent, title, r, c, color, colspan=1, multi=False):
+        card = ctk.CTkFrame(parent, fg_color=styles.CARD_BG, corner_radius=styles.CORNER_RADIUS)
+        card.grid(row=r, column=c, columnspan=colspan, sticky="nsew", padx=8, pady=8)
+        # title
+        t = ctk.CTkLabel(card, text=title, text_color=styles.TEXT_PRIMARY,
+                         font=ctk.CTkFont(size=16, weight="bold"))
+        t.pack(anchor="w", padx=10, pady=(10,4))
 
-        # MAIN CONTAINER
-        container = ctk.CTkFrame(self.parent, fg_color=BACKGROUND_DARK)
-        container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
-
-        # Grid layout for 3 rows, 2 columns
-        for r in range(3):
-            container.grid_rowconfigure(r, weight=1, pad=8)
-        container.grid_columnconfigure(0, weight=1, pad=8)
-        container.grid_columnconfigure(1, weight=1, pad=8)
-
-        self.build_graph_cards(container)
-
-    # ---------------- CARD CREATOR ----------------
-
-    def create_card(self, parent, title, row, col, colspan=1):
-        card = ctk.CTkFrame(
-            parent,
-            fg_color=CARD_BG,
-            corner_radius=12,  # 12px rounded corners
-        )
-        card.grid(
-            row=row,
-            column=col,
-            columnspan=colspan,
-            sticky="nsew",
-            padx=8,
-            pady=8,
-        )
-
-        label = ctk.CTkLabel(
-            card,
-            text=title,
-            font=ctk.CTkFont("Segoe UI", 16, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        )
-        label.pack(anchor="w", padx=14, pady=(8, 0))
-
-        underline = ctk.CTkFrame(
-            card, fg_color=ACCENT_ORANGE, height=2, corner_radius=2
-        )
-        underline.pack(fill="x", padx=14, pady=(4, 10))
-
-        frame = tk.Frame(card, bg=CARD_BG, highlightthickness=0, bd=0)
-        frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        return frame
-
-    # ---------------- BUILD GRAPH CARDS ----------------
-
-    def build_graph_cards(self, parent):
-        # slightly larger figs so charts fill cards nicely
-        fig_w, fig_h = 5.6, 2.6
-
-        # Row 1: Disk (left) | Memory (right)
-        disk_frame = self.create_card(parent, "Disk Usage", 0, 0)
-        self.disk_fig = self.Figure(figsize=(fig_w, fig_h), dpi=90)
-        self._style_figure(self.disk_fig)
-        self.disk_ax = self.disk_fig.add_subplot(111)
-        self._style_axis(self.disk_ax)
-        self.disk_canvas = self.FigureCanvasTkAgg(self.disk_fig, disk_frame)
-        self.disk_canvas.get_tk_widget().pack(fill="both", expand=True)
-
-        mem_frame = self.create_card(parent, "Memory Usage", 0, 1)
-        self.mem_fig = self.Figure(figsize=(fig_w, fig_h), dpi=90)
-        self._style_figure(self.mem_fig)
-        self.mem_ax = self.mem_fig.add_subplot(111)
-        self._style_axis(self.mem_ax)
-        self.mem_canvas = self.FigureCanvasTkAgg(self.mem_fig, mem_frame)
-        self.mem_canvas.get_tk_widget().pack(fill="both", expand=True)
-
-        # Row 2: GPU Memory (left) | GPU Usage (right)
-        gpumem_frame = self.create_card(parent, "GPU Memory", 1, 0)
-        self.gpu_mem_fig = self.Figure(figsize=(fig_w, fig_h), dpi=90)
-        self._style_figure(self.gpu_mem_fig)
-        self.gpu_mem_ax = self.gpu_mem_fig.add_subplot(111)
-        self._style_axis(self.gpu_mem_ax)
-        self.gpu_mem_canvas = self.FigureCanvasTkAgg(self.gpu_mem_fig, gpumem_frame)
-        self.gpu_mem_canvas.get_tk_widget().pack(fill="both", expand=True)
-
-        gpu_frame = self.create_card(parent, "GPU Usage", 1, 1)
-        self.gpu_fig = self.Figure(figsize=(fig_w, fig_h), dpi=90)
-        self._style_figure(self.gpu_fig)
-        self.gpu_ax = self.gpu_fig.add_subplot(111)
-        self._style_axis(self.gpu_ax)
-        self.gpu_canvas = self.FigureCanvasTkAgg(self.gpu_fig, gpu_frame)
-        self.gpu_canvas.get_tk_widget().pack(fill="both", expand=True)
-
-        # Row 3: CPU Usage (full width)
-        cpu_frame = self.create_card(parent, "CPU Usage", 2, 0, colspan=2)
-        self.cpu_fig = self.Figure(figsize=(fig_w * 2, fig_h), dpi=90)
-        self._style_figure(self.cpu_fig)
-        self.cpu_ax = self.cpu_fig.add_subplot(111)
-        self._style_axis(self.cpu_ax)
-        self.cpu_canvas = self.FigureCanvasTkAgg(self.cpu_fig, cpu_frame)
-        self.cpu_canvas.get_tk_widget().pack(fill="both", expand=True)
-
-    # ---------------- STYLING ----------------
-
-    def _style_figure(self, fig):
-        fig.patch.set_facecolor(CARD_BG)
-        # tighten layout a bit so charts are bigger
-        fig.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.18)
-
-    def _style_axis(self, ax):
-        ax.set_facecolor(CARD_BG)
-        ax.tick_params(colors=TEXT_MUTED, labelsize=9)
+        fig = plt.Figure(figsize=(6,2.4), dpi=100)
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(styles.CARD_BG)
+        fig.patch.set_facecolor(styles.CARD_BG)
+        ax.tick_params(colors="white", labelsize=9)
         for spine in ax.spines.values():
-            spine.set_color("#33333F")
-        ax.grid(True, color="#2A2A35", alpha=0.35)
-        ax.set_ylim(0, 100)
-        ax.set_xlim(0, 60)
-        ax.set_ylabel("%", color=TEXT_MUTED)
+            spine.set_color("#222225")
 
-    # ---------------- UPDATE GRAPHS ----------------
+        if multi:
+            # network has two lines
+            line_down, = ax.plot([], [], color=styles.NEON_CYAN, linewidth=styles.GRAPH_LINEWIDTH)
+            line_up, = ax.plot([], [], color=styles.NEON_LIME, linewidth=styles.GRAPH_LINEWIDTH)
+            legend = ax.legend(["Download KB/s", "Upload KB/s"], facecolor=styles.CARD_BG, labelcolor=styles.TEXT_PRIMARY)
+        else:
+            line, = ax.plot([], [], color=color, linewidth=styles.GRAPH_LINEWIDTH)
+            line_down = line_up = None
 
-    def _draw_orange_series(self, ax, values):
-        x = list(range(len(values)))
-        ax.clear()
-        self._style_axis(ax)
+        canvas = FigureCanvasTkAgg(fig, master=card)
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=(6,10))
 
-        # soft fill under line (glow effect)
-        ax.fill_between(
-            x,
-            values,
-            [0] * len(values),
-            color=ACCENT_ORANGE,
-            alpha=0.15,
-        )
+        return {"card": card, "ax": ax, "fig": fig, "canvas": canvas, "color": color,
+                "line": line if not multi else None, "line_down": line_down, "line_up": line_up, "multi": multi}
 
-        # glow line
-        ax.plot(
-            x,
-            values,
-            color=ACCENT_ORANGE_LIGHT,
-            linewidth=5,
-            alpha=0.25,
-        )
-
-        # main line
-        ax.plot(
-            x,
-            values,
-            color=ACCENT_ORANGE,
-            linewidth=2.4,
-        )
-
-    def update_graphs(self):
-        data = self.monitor.get_all_data()
-
-        self._draw_orange_series(self.disk_ax, data["disk"])
-        self.disk_canvas.draw()
-
-        self._draw_orange_series(self.mem_ax, data["memory"])
-        self.mem_canvas.draw()
-
-        self._draw_orange_series(self.gpu_mem_ax, data["gpu_memory"])
-        self.gpu_mem_canvas.draw()
-
-        self._draw_orange_series(self.gpu_ax, data["gpu"])
-        self.gpu_canvas.draw()
-
-        self._draw_orange_series(self.cpu_ax, data["cpu"])
-        self.cpu_canvas.draw()
-
-    # ---------------- UPDATE LOOP ----------------
-
-    def start_updates(self):
-        self.update_running = True
-        self._loop_update()
-
-    def _loop_update(self):
-        if not self.update_running:
-            return
-        try:
-            self.update_graphs()
-        except Exception:
-            pass
-        self.update_job = self.parent.after(600, self._loop_update)
-
-    def stop_updates(self):
-        self.update_running = False
-        if self.update_job:
+    # -------- update loop in background thread (collect samples)
+    def _update_loop(self):
+        while self.running:
             try:
-                self.parent.after_cancel(self.update_job)
+                cpu = perf_backend.get_cpu_percent()
+                ram = perf_backend.get_ram_percent()
+                disk = perf_backend.get_disk_percent()
+                down, up = perf_backend.get_network_delta(self.prev_net)
+                gpu, gpu_mem = perf_backend.get_gpu_metrics_placeholder()
+
+                # append
+                self.cpu_hist.append(cpu)
+                self.ram_hist.append(ram)
+                self.disk_hist.append(disk)
+                self.gpu_hist.append(gpu)
+                self.gpu_mem_hist.append(gpu_mem)
+                self.net_down_hist.append(down)
+                self.net_up_hist.append(up)
+
+                # schedule UI update on main thread
+                self.parent.after(0, self._refresh_ui)
             except Exception:
                 pass
-            self.update_job = None
+
+            time.sleep(UPDATE_INTERVAL)
+
+    def _refresh_ui(self):
+        # update numeric cards
+        if self.cpu_hist:
+            self.val_cpu.configure(text=f"{self.cpu_hist[-1]:.1f}%")
+        if self.ram_hist:
+            self.val_ram.configure(text=f"{self.ram_hist[-1]:.1f}%")
+        if self.disk_hist:
+            self.val_disk.configure(text=f"{self.disk_hist[-1]:.1f}%")
+        if self.net_down_hist:
+            self.val_net.configure(text=f"{self.net_down_hist[-1]:.1f} KB/s")
+
+        # update graphs
+        self._draw_line(self.card_cpu, list(self.cpu_hist), styles.NEON_ORANGE)
+        self._draw_line(self.card_ram, list(self.ram_hist), styles.NEON_BLUE)
+        self._draw_line(self.card_disk, list(self.disk_hist), styles.NEON_YELLOW)
+        # GPU placeholders (zero or flat)
+        self._draw_line(self.card_gpu_usage, list(self.gpu_hist), styles.NEON_PURPLE)
+        self._draw_line(self.card_gpu_mem, list(self.gpu_mem_hist), styles.NEON_PINK)
+        # network multi line
+        self._draw_network(self.card_net, list(self.net_down_hist), list(self.net_up_hist))
+
+    def _draw_line(self, card, data, color):
+        ax = card["ax"]
+        ax.clear()
+        ax.set_facecolor(styles.CARD_BG)
+        ax.tick_params(colors="white", labelsize=9)
+        for spine in ax.spines.values():
+            spine.set_color("#222225")
+        if not data:
+            data = [0]
+        x = range(len(data))
+        ax.plot(x, data, color=color, linewidth=styles.GRAPH_LINEWIDTH)
+        # gradient
+        ax.fill_between(x, data, [0]*len(data), color=color, alpha=0.12)
+        card["canvas"].draw()
+
+    def _draw_network(self, card, down, up):
+        ax = card["ax"]
+        ax.clear()
+        ax.set_facecolor(styles.CARD_BG)
+        ax.tick_params(colors="white", labelsize=9)
+        for spine in ax.spines.values():
+            spine.set_color("#222225")
+        x = range(len(down))
+        ax.plot(x, down, color=styles.NEON_CYAN, linewidth=styles.GRAPH_LINEWIDTH)
+        ax.plot(x, up, color=styles.NEON_LIME, linewidth=styles.GRAPH_LINEWIDTH)
+        ax.fill_between(x, down, [0]*len(down), color=styles.NEON_CYAN, alpha=0.12)
+        ax.fill_between(x, up, [0]*len(up), color=styles.NEON_LIME, alpha=0.08)
+        ax.legend(["Download KB/s", "Upload KB/s"], facecolor=styles.CARD_BG, labelcolor=styles.TEXT_PRIMARY)
+        card["canvas"].draw()
+
+    def stop_updates(self):
+        self.running = False

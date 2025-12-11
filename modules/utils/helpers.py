@@ -1,24 +1,14 @@
-import importlib.util
-import psutil
-
-def check_psutil():
-    """
-    Check if psutil is installed and importable.
-    """
+# modules/utils/helpers.py
+def check_matplotlib():
     try:
-        import psutil
+        import matplotlib  # noqa: F401
         return True
-    except ImportError:
+    except Exception:
         return False
 
-
-def check_matplotlib():
-    """
-    Check if matplotlib is installed and importable.
-    """
-    spec = importlib.util.find_spec("matplotlib")
-    return spec is not None
-
-
-def get_psutil():
-    return psutil
+def check_psutil():
+    try:
+        import psutil  # noqa: F401
+        return True
+    except Exception:
+        return False
